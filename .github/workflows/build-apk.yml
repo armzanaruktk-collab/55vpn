@@ -1,6 +1,10 @@
 name: Build Android APKs
 
 on:
+  push:
+    paths:
+      - 'Android-Projects-Prepared.zip'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 permissions:
@@ -10,11 +14,47 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source and Git submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
+
+      - name: Extract Android source ZIP
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip
+          mkdir -p "$RUNNER_TEMP/packed"
+          unzip -q Android-Projects-Prepared.zip -d "$RUNNER_TEMP/packed"
+          PROJECT="$RUNNER_TEMP/packed/android_projects_prepared/ics-openvpn-master"
+          test -f "$PROJECT/gradlew" || { echo "::error::gradlew not found inside the uploaded ZIP"; exit 1; }
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Restore missing Git submodules
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT"
+          # The uploaded ZIP does not preserve Git submodule commit pointers,
+          # so fetch the declared upstream repositories into their expected paths.
+          clone_if_missing() {
+            path="$1"
+            url="$2"
+            if [ ! -f "$path/.git" ] && [ ! -d "$path/.git" ]; then
+              rm -rf "$path"
+              mkdir -p "$(dirname "$path")"
+              git clone --depth 1 "$url" "$path"
+            fi
+          }
+          clone_if_missing main/src/main/cpp/openvpn https://github.com/schwabe/openvpn.git
+          clone_if_missing main/src/main/cpp/openssl https://github.com/schwabe/platform_external_openssl.git
+          clone_if_missing main/src/main/cpp/mbedtls https://github.com/ARMmbed/mbedtls.git
+          clone_if_missing main/src/main/cpp/openvpn3 https://github.com/schwabe/openvpn3.git
+          clone_if_missing main/src/main/cpp/asio https://github.com/chriskohlhoff/asio.git
+          clone_if_missing main/src/main/cpp/lz4 https://github.com/lz4/lz4.git
+          clone_if_missing main/src/main/cpp/fmt https://github.com/fmtlib/fmt.git
+          if [ ! -f main/src/main/cpp/openvpn3/client/ovpncli.i ]; then
+            echo "::error::OpenVPN3 checkout does not contain client/ovpncli.i; upstream submodule version may be incompatible."
+            exit 1
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -22,36 +62,26 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
+          cache-dependency-path: '**/*.gradle*'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Check Android project files
-        shell: bash
-        run: |
-          if [ ! -f ./gradlew ]; then
-            echo "::error::Android source is missing: gradlew was not found at the repository root. Upload the project source first."
-            exit 1
-          fi
-          if [ ! -f ./settings.gradle ] && [ ! -f ./settings.gradle.kts ]; then
-            echo "::error::Android source is incomplete: settings.gradle(.kts) was not found."
-            exit 1
-          fi
-          if [ ! -f main/src/main/cpp/openvpn3/client/ovpncli.i ]; then
-            echo "::error::Missing OpenVPN3 file main/src/main/cpp/openvpn3/client/ovpncli.i. Restore the Git submodule metadata and initialize submodules before building."
-            exit 1
-          fi
-
       - name: Accept Android SDK licenses
+        shell: bash
         run: yes | sdkmanager --licenses || true
 
       - name: Build debug APKs
-        run: chmod +x ./gradlew && ./gradlew --no-daemon assemble
+        shell: bash
+        run: |
+          cd "$PROJECT"
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleUiOvpn23Debug assembleUiOvpn2Debug
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: 55vpn-debug-apks
-          path: '**/build/outputs/apk/**/*.apk'
+          path: '$RUNNER_TEMP/packed/android_projects_prepared/ics-openvpn-master/**/build/outputs/apk/**/*.apk'
           if-no-files-found: error
           retention-days: 14
