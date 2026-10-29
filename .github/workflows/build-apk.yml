@@ -1,0 +1,57 @@
+name: Build Android APKs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source and Git submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Check Android project files
+        shell: bash
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "::error::Android source is missing: gradlew was not found at the repository root. Upload the project source first."
+            exit 1
+          fi
+          if [ ! -f ./settings.gradle ] && [ ! -f ./settings.gradle.kts ]; then
+            echo "::error::Android source is incomplete: settings.gradle(.kts) was not found."
+            exit 1
+          fi
+          if [ ! -f main/src/main/cpp/openvpn3/client/ovpncli.i ]; then
+            echo "::error::Missing OpenVPN3 file main/src/main/cpp/openvpn3/client/ovpncli.i. Restore the Git submodule metadata and initialize submodules before building."
+            exit 1
+          fi
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Build debug APKs
+        run: chmod +x ./gradlew && ./gradlew --no-daemon assemble
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: 55vpn-debug-apks
+          path: '**/build/outputs/apk/**/*.apk'
+          if-no-files-found: error
+          retention-days: 14
